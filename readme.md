@@ -1,5 +1,7 @@
 # GTCEU multiblock Automation System
 
+### I am not a lua programmer. I am not planning to support this, as it was made for myself. If you want to use it, you are on your own.
+
 ## Requirements
 - [Cc tweaked](https://modrinth.com/mod/cc-tweaked)
 - [Kubejs + cc](https://modrinth.com/mod/kubejs+cc-tweaked)
