@@ -1,0 +1,70 @@
+# GTCEU multiblock Automation System
+
+## Overview
+This system is designed to automate the process of managing multiple GregTech multiblocks, enabling automatic circuit configuration changes for efficient processing. It leverages Lua scripts to parallelize operations across various peripherals, handling both items and fluids dynamically.
+
+## Features
+- **Parallel Processing:** Utilizes multiple GregTech multiblocks in parallel to optimize processing tasks.
+- **Dynamic Circuit Configuration:** Automatically changes circuits based on specified configurations to adapt to different operations.
+- **Robust Logging:** Supports logging at various levels (DEBUG, INFO, WARNING, ERROR) and can write logs to a file for troubleshooting and monitoring.
+- **Flexible Item and Fluid Handling:** Configurable input and output blocks for managing both items and fluids.
+- **Round-Robin Distribution:** Optional round-robin approach for distributing items evenly across available outputs.
+- **Output Pairing:** Supports pairing of output blocks (e.g., a liquid hatch and an item bus) to coordinate actions on paired peripherals, like multiblocks - Electric Blast Furnaces, Alloy Blast Smelter, etc.
+
+## Configuration
+The system's behavior is controlled by a configuration table defined in the Lua script, with the following keys:
+
+- `writeLogToFile`: Toggle to enable or disable writing logs to a file.
+- `logLevel`: The current log level, set to DEBUG by default for comprehensive output.
+- `setCircuitConfig`: Enables or disables automatic circuit configuration.
+- `circuitConfigItem`: Specifies the item used for circuit configuration, defaulting to "minecraft:paper".
+- `circuitReturnInventoryBlock`: Defines the block (typically an ME interface) where circuit configuration items are returned after use.
+- `inputBlockFluids`: Identifies the block from which fluids are extracted.
+- `inputBlockItems`: Identifies the block from which items are extracted.
+- `outputBlockFluids`: Regex pattern that matches the blocks into which fluids are inserted.
+- `outputBlockItems`: Regex pattern that matches the blocks into which items are inserted.
+- `outputPairing`: If set to true, treats output blocks as pairs rather than individually.
+- `outputFluidsPairingCoords`: Specifies the relative coordinates for paired fluid and item output blocks.
+- `doRoundRobin`: Enables or disables round-robin distribution of items and fluids to output blocks.
+
+## Usage
+The system is designed to be used with a ME Pattern Provider that pushes items into an ME Ingredient Buffer in blocking mode. This buffer is then specified as both `inputBlockFluids` and `inputBlockItems`, although separate blocks like a barrel and a fluid cell can also be used.
+
+The `circuitReturnInventoryBlock` is configured as an ME interface where the `circuitConfigItem` is returned after setting a circuit configuration in a multiblock. The automation script takes care of initializing the peripherals, setting up configurations, and handling the operations in a loop to ensure continuous processing.
+
+## Log Levels
+The system defines several log levels to control the amount and type of output generated:
+
+- `DEBUG`: Provides detailed debug information.
+- `INFO`: General information about operations.
+- `WARNING`: Warnings that might indicate a potential issue.
+- `ERROR`: Critical issues that require immediate attention.
+
+## Dependencies
+This system requires a Lua environment with the `parallel`, `fs`, and `peripheral` APIs available, typically provided in a modded Minecraft setting using the ComputerCraft or similar mods.
+
+## Installation
+To install, place the Lua script in the computer or server running within your modded Minecraft environment. Ensure all peripherals and blocks are correctly configured as per the `config.lua` file.
+
+## Support
+For support, refer to the system logs and ensure your modded environment is set up correctly to interface with the Lua script. For further assistance, review the mod documentation or community forums associated with your Minecraft mods.
+
+## Circuit Configuration and Usage
+
+To facilitate dynamic control over circuit configurations in GregTech multiblocks, the system allows encoding of AE2 patterns using an item, typically "minecraft:paper", renamed to indicate the circuit number. Each renamed item should follow the format "C:{number}", where "{number}" represents the circuit number. For example:
+
+
+
+- "C:1" sets the device to circuit configuration 1.
+
+- "C:-1" removes any existing circuit configuration.
+
+- "C:20" sets the device to circuit configuration 20.
+
+
+
+These items should be set as secondary outputs in the AE2 system to ensure they are used specifically for setting the circuit configurations in the GregTech machinery. The system automatically handles the return of these items to the designated `circuitReturnInventoryBlock` after use, allowing for continuous reuse without manual intervention.
+
+
+
+Ensure that these circuit configuration items are encoded into the AE2 patterns correctly and that they are also present in the system to allow seamless automation of your GregTech setups.
