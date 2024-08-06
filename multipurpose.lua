@@ -1,0 +1,686 @@
+local function findFileRecursive(path, name)
+    local files = fs.list(path)
+    for _, file in ipairs(files) do
+        if fs.isDir(file) then
+            local result = findFileRecursive(file, name)
+            if result ~= nil then
+                return result
+            end
+        else
+            if file == name then
+                return fs.combine(path, file)
+            end
+        end
+    end
+    return nil
+end
+
+local function loadConfig()
+    local configPath = findFileRecursive(".", "config.lua")
+    if configPath == nil then
+        error("Could not find config.lua")
+    end
+
+    -- trim .lua
+    configPath = configPath:sub(1, -5)
+    print("Loading config from " .. configPath)
+
+    return require(configPath)
+end
+
+
+local config = loadConfig()
+if config == nil then
+    error("Could not load config.")
+end
+print("Config loaded")
+
+
+-- Console
+
+PARALLELCALLER = {
+    funcs = {}
+}
+
+function PARALLELCALLER:new()
+    local o = {}
+    setmetatable(o, self)
+    self.__index = self
+    return o
+end
+
+function PARALLELCALLER:add(func)
+    table.insert(self.funcs, func)
+end
+
+function PARALLELCALLER:call()
+    parallel.waitForAll(unpack(self.funcs))
+    self.funcs = {}
+end
+
+OUT = {
+    file = nil,
+    level = config.logLevel,
+}
+
+function OUT:new(o)
+    o = o or {}
+    setmetatable(o, self)
+    self.__index = self
+    if config.writeLogToFile then
+        o.file = io.open("log.txt", "w")
+    end
+    return o
+end
+
+function OUT:_write(level, msg)
+    if level >= self.level then
+        if config.writeLogToFile then
+            self.file:write(msg .. "\n")
+            self.file:flush()
+        end
+        print(msg)
+    end
+end
+
+function OUT:print(level, fmt, ...)
+    if level < self.level then
+        return
+    end
+    local timeStr = os.date("[%d/%m %H:%M:%S] ")
+    local msg = timeStr
+    if level == config.levels.DEBUG then
+        msg = msg .. "D> "
+    elseif level == config.levels.INFO then
+        msg = msg .. "I> "
+    elseif level == config.levels.WARNING then
+        msg = msg .. "W> "
+    elseif level == config.levels.ERROR then
+        msg = msg .. "E> "
+    end
+
+    msg = msg .. string.format(fmt, ...)
+
+    self:_write(level, msg)
+    if level == config.levels.ERROR then
+        error(msg)
+    end
+end
+
+function OUT:debug(fmt, ...)
+    self:print(config.levels.DEBUG, fmt, ...)
+end
+
+function OUT:info(fmt, ...)
+    self:print(config.levels.INFO, fmt, ...)
+end
+
+function OUT:warning(fmt, ...)
+    self:print(config.levels.WARNING, fmt, ...)
+end
+
+function OUT:error(fmt, ...)
+    self:print(config.levels.ERROR, fmt, ...)
+end
+
+local out = OUT:new()
+
+function FormatTable(tabl)
+    if tabl == nil then
+        return "nil"
+    end
+    local text = ""
+    for key, value in pairs(tabl) do
+        text = text .. string.format("%s=%s, ", key, value)
+    end
+
+    if text ~= "" then
+        text = text:sub(1, -3)
+    else
+        text = "(empty tabl)"
+    end
+
+    return text
+end
+
+-- END Console
+
+local function checkConfig()
+    if config.inputBlockFluids == nil and config.inputBlockItems == nil then
+        out:error("At least one of config.inputBlockFluids or config.inputBlockItems must be set")
+    end
+    if config.outputBlockFluids == nil and config.outputBlockItems == nil then
+        out:error("At least one of config.outputBlockFluids or config.outputBlockItems must be set")
+    end
+
+    if config.setCircuitConfig and config.circuitReturnInventoryBlock == nil then
+        out:error("If config.setCircuitConfig is set to true, config.circuitReturnInventoryBlock must be set")
+    end
+
+    if config.outputPairing and (config.outputFluidsPairingCoords.x == nil or config.outputFluidsPairingCoords.y == nil or config.outputFluidsPairingCoords.z == nil) then
+        out:error("If config.outputPairing is set to true, config.outputFluidsPairingCoords must be set")
+    end
+
+    out:info("Config check passed")
+end
+
+checkConfig()
+
+-- GTCEU blocks are often updated (i.e. when an item is inserted/etc), and if we try to call a method while it's updating, the method will fail.
+-- so I'm introducing a retry mechanism
+local RTR_CNT = 60
+local function pcallWithRetries(func, retries, ...)
+    if func == nil then
+        local info = debug.getinfo(2)
+        out:error("Function is nil. Called from %s:%d", info.source, info.currentline)
+    end
+
+    local tries = 0
+    local last_error = nil
+    while tries < retries do
+        local succ, msg = pcall(func, ...)
+        if succ then
+            return msg
+        else
+            tries = tries + 1
+            last_error = msg
+        end
+    end
+
+    local info = debug.getinfo(2)
+
+    out:error("Max retries (%d) exceeded while calling function %s:%d. Last error: %s", retries, info.source,
+        info.currentline, last_error)
+end
+-- shortcut
+local function pcallR(func, ...)
+    return pcallWithRetries(func, RTR_CNT, ...)
+end
+
+function table.contains(table, element)
+    for _, value in pairs(table) do
+        if value == element then
+            return true
+        end
+    end
+    return false
+end
+
+local next = next
+
+function isTableEmpty(tbl)
+    if tbl == nil then return true end
+    for _ in pairs(tbl) do
+        return false
+    end
+    return true
+end
+
+OUTPUT = {
+    items_peripheral = nil,
+    items_peripheral_name = nil,
+    fluids_peripheral = nil,
+    fluids_peripheral_name = nil,
+}
+
+function OUTPUT:new()
+    local o = {}
+    setmetatable(o, self)
+    self.__index = self
+    return o
+end
+
+function OUTPUT:setItemsPeripheral(periph)
+    self.items_peripheral = periph
+    self.items_peripheral_name = peripheral.getName(periph)
+end
+
+function OUTPUT:setFluidsPeripheral(periph)
+    self.fluids_peripheral = periph
+    self.fluids_peripheral_name = peripheral.getName(periph)
+end
+
+function OUTPUT:isEmpty()
+    if self.fluids_peripheral ~= nil then
+        if not isTableEmpty(pcallR(self.fluids_peripheral.tanks)) then
+            return false
+        end
+    end
+    if self.items_peripheral ~= nil then
+        local items = pcallR(self.items_peripheral.list)
+        for _, item in pairs(items) do
+            if item.name ~= "gtceu:programmed_circuit" then -- ignore circuit configuration "item".
+                return false
+            end
+        end
+    end
+    return true
+end
+
+function OUTPUT:strWithCoords()
+    if self.items_peripheral ~= nil and self.fluids_peripheral ~= nil then
+        return string.format("Items: %s, Fluids: %s", FormatTable(pcallR(self.items_peripheral.getCoords)),
+            FormatTable(pcallR(self.fluids_peripheral.getCoords)))
+    elseif self.items_peripheral ~= nil then
+        return string.format("Items: %s", FormatTable(pcallR(self.items_peripheral.getCoords)))
+    elseif self.fluids_peripheral ~= nil then
+        return string.format("Fluids: %s", FormatTable(pcallR(self.fluids_peripheral.getCoords)))
+    end
+end
+
+function OUTPUT:itemStrWithCoords()
+    if self.items_peripheral ~= nil then
+        return string.format("Items: %s", FormatTable(pcallR(self.items_peripheral.getCoords)))
+    end
+end
+
+function OUTPUT:fluidStrWithCoords()
+    if self.fluids_peripheral ~= nil then
+        return string.format("Fluids: %s", FormatTable(pcallR(self.fluids_peripheral.getCoords)))
+    end
+end
+
+ConnectedPeripherals = {
+    circuitReturnInventoryPerihperal = nil,
+    circuitReturnInventoryPerihperalName = nil,
+    inputBlockFluidsPeripheral = nil,
+    inputBlockFluidsPeripheralName = nil,
+    inputBlockItemsPeripheral = nil,
+    inputBlockItemsPeripheralName = nil,
+    outputs = {},
+    lastOutputIndex = 1 -- round-robin. Skips over busy outputs
+}
+
+function ConnectedPeripherals:new()
+    local o = {}
+    setmetatable(o, self)
+    self.__index = self
+    return o
+end
+
+function ConnectedPeripherals:setCircuitReturnInventoryPeripheral(periph)
+    self.circuitReturnInventoryPerihperal = periph
+    self.circuitReturnInventoryPerihperalName = peripheral.getName(periph)
+end
+
+function ConnectedPeripherals:setinputBlockFluidsPeripheral(periph)
+    self.inputBlockFluidsPeripheral = periph
+    self.inputBlockFluidsPeripheralName = peripheral.getName(periph)
+end
+
+function ConnectedPeripherals:setinputBlockItemsPeripheral(periph)
+    self.inputBlockItemsPeripheral = periph
+    self.inputBlockItemsPeripheralName = peripheral.getName(periph)
+end
+
+function ConnectedPeripherals:addOutput(output)
+    if output.items_peripheral == nil and output.fluids_peripheral == nil then
+        out:error("Output must have at least one peripheral")
+    end
+    if config.outputPairing and (output.items_peripheral == nil or output.fluids_peripheral == nil) then
+        out:error("If config.outputPairing is set to true, output must have both item and fluid peripherals.")
+    end
+
+    table.insert(self.outputs, output)
+end
+
+function ConnectedPeripherals:initialize()
+    local outputItemPeripherals = {}
+    local outputFluidPeripherals = {}
+
+    out:info("Loading peripherals...")
+
+    for _, periphName in pairs(peripheral.getNames()) do
+        if peripheral.isPresent(periphName) then
+            local wrapped = peripheral.wrap(periphName)
+            local methods = peripheral.getMethods(periphName)
+            local hasgetBlockId = table.contains(methods, "getBlockId")
+            if hasgetBlockId then
+                local blockId = pcallR(wrapped.getBlockId)
+                out:debug("Peripheral %s has block id %s", periphName, blockId)
+                if blockId == config.circuitReturnInventoryBlock then
+                    if self.circuitReturnInventoryPerihperal ~= nil then
+                        out:warning("Circuit return inventory block is already set, ignoring %s", periphName)
+                    else
+                        out:debug("Circuit return inventory block found at %s, functions: %s", periphName,
+                            FormatTable(methods))
+                        self:setCircuitReturnInventoryPeripheral(wrapped)
+                    end
+                end
+                if blockId == config.inputBlockFluids then
+                    if self.inputBlockFluidsPeripheral ~= nil then
+                        out:warning("Input block for fluids is already set, ignoring %s", periphName)
+                    else
+                        local suc, _ = pcall(wrapped.tanks)
+                        if not suc then
+                            out:error("Fluid Peripheral %s does not have tanks method", periphName)
+                        end
+                        self:setinputBlockFluidsPeripheral(wrapped)
+                    end
+                end
+                if blockId == config.inputBlockItems then
+                    if self.inputBlockItemsPeripheral ~= nil then
+                        out:warning("Input block for items is already set, ignoring %s", periphName)
+                    else
+                        local suc, _ = pcall(wrapped.list)
+                        if not suc then
+                            out:error("Item Peripheral %s does not have list method", periphName)
+                        end
+                        self:setinputBlockItemsPeripheral(wrapped)
+                    end
+                end
+                if string.match(blockId, config.outputBlockItems) then
+                    if config.setCircuitConfig then
+                        if not table.contains(methods, "setProgrammedCircuit") then
+                            out:error("Peripheral %s does not have setProgrammedCircuit method", periphName)
+                        end
+                    end
+                    local suc, _ = pcall(wrapped.list)
+                    if not suc then
+                        out:error("Item Peripheral %s does not have list method", periphName)
+                    end
+                    table.insert(outputItemPeripherals, wrapped)
+                    out:debug("Output block for items found at %s", periphName)
+                end
+                if string.match(blockId, config.outputBlockFluids) then
+                    local suc, _ = pcall(wrapped.tanks)
+                    if not suc then
+                        out:error("Fluid Peripheral %s does not have tanks method", periphName)
+                    end
+                    table.insert(outputFluidPeripherals, wrapped)
+                    out:debug("Output block for fluids found at %s", periphName)
+                end
+            else
+                if periphName ~= 'back' and periphName ~= 'left' and periphName ~= 'right' and periphName ~= 'top' and periphName ~= 'bottom' then
+                    out:warning("Peripheral '%s' does not have getBlockId method", periphName)
+                end
+            end
+        end
+    end
+
+    if config.outputPairing then
+        if #outputItemPeripherals ~= #outputFluidPeripherals then
+            out:error("Number of item and fluid peripherals must be equal when config.outputPairing is set to true")
+        end
+
+        for _, itemPeriph in ipairs(outputItemPeripherals) do
+            local output = OUTPUT:new()
+            local itemCoodrinates = pcallR(itemPeriph.getCoords)
+            local expectedFluidCoords = {
+                x = itemCoodrinates.x + config.outputFluidsPairingCoords.x,
+                y = itemCoodrinates.y + config.outputFluidsPairingCoords.y,
+                z = itemCoodrinates.z + config.outputFluidsPairingCoords.z
+            }
+            for _, fluidPeriph in ipairs(outputFluidPeripherals) do
+                local fluidCoordinates = pcallR(fluidPeriph.getCoords)
+                if fluidCoordinates.x == expectedFluidCoords.x and
+                    fluidCoordinates.y == expectedFluidCoords.y and
+                    fluidCoordinates.z == expectedFluidCoords.z then
+                    output:setItemsPeripheral(itemPeriph)
+                    output:setFluidsPeripheral(fluidPeriph)
+                end
+            end
+            if output.fluids_peripheral == nil then
+                out:error(
+                    "Could not find matching fluid peripheral for item peripheral at coordinates %s. Expected fluid peripheral at coordinates %s",
+                    FormatTable(itemCoodrinates), FormatTable(expectedFluidCoords)
+                )
+            end
+            self:addOutput(output)
+        end
+    else
+        for _, itemPeriph in ipairs(outputItemPeripherals) do
+            local output = OUTPUT:new()
+            output:setItemsPeripheral(itemPeriph)
+            self:addOutput(output)
+        end
+        for _, fluidPeriph in ipairs(outputFluidPeripherals) do
+            local output = OUTPUT:new()
+            output:setFluidsPeripheral(fluidPeriph)
+            self:addOutput(output)
+        end
+    end
+
+    if self.circuitReturnInventoryPerihperal == nil then
+        if config.setCircuitConfig then
+            out:error(
+                "Circuit return inventory block not found. Please make sure that config.circuitReturnInventoryBlock is set correctly")
+        end
+    else
+        out:info("Circuit return inventory block found at %s",
+            FormatTable(pcallR(self.circuitReturnInventoryPerihperal.getCoords)))
+    end
+
+    if self.inputBlockFluidsPeripheral == nil then
+        if config.inputBlockFluids ~= nil then
+            out:error("Input block for fluids not found. Please make sure that config.inputBlockFluids is set correctly")
+        end
+    else
+        out:info("Input block for fluids found at %s", FormatTable(pcallR(self.inputBlockFluidsPeripheral.getCoords)))
+    end
+
+    if self.inputBlockItemsPeripheral == nil then
+        if config.inputBlockItems ~= nil then
+            out:error("Input block for items not found. Please make sure that config.inputBlockItems is set correctly")
+        end
+    else
+        out:info("Input block for items found at %s", FormatTable(pcallR(self.inputBlockItemsPeripheral.getCoords)))
+    end
+
+    if #self.outputs == 0 then
+        out:error(
+            "No output blocks found. Please make sure that config.outputBlockItems and config.outputBlockFluids are set correctly")
+    else
+        out:info("Found %d output blocks/pairs", #self.outputs)
+        for i, output in ipairs(self.outputs) do
+            out:info("Output block %d found: %s", i, output:strWithCoords())
+        end
+    end
+
+    out:info("Initialization complete")
+end
+
+function ConnectedPeripherals:findAvailableOutputRR()
+    local startIndex = self.lastOutputIndex + 1
+    -- Wrap the start index if it exceeds the number of outputs
+    if startIndex > #self.outputs then
+        startIndex = 1
+    end
+
+    -- First, try to find an available output starting from startIndex to the end of the list
+    for i = startIndex, #self.outputs do
+        if self.outputs[i]:isEmpty() then
+            out:debug("Output %d (%s) is available", i, self.outputs[i]:strWithCoords())
+            self.lastOutputIndex = i
+            return self.outputs[i]
+        end
+    end
+
+    -- If no output was found in the first part, try from the beginning of the list to startIndex - 1
+    for i = 1, startIndex - 1 do
+        if self.outputs[i]:isEmpty() then
+            out:debug("Output %d (%s) is available", i, self.outputs[i]:strWithCoords())
+            self.lastOutputIndex = i
+            return self.outputs[i]
+        end
+    end
+
+    -- Return nil if no available output is found
+    return nil
+end
+
+
+function ConnectedPeripherals:findAvailableOutputSimple()
+    for i, output in ipairs(self.outputs) do
+        if output:isEmpty() then
+            out:debug("Output %d (%s) is available", i, output:strWithCoords())
+            return output
+        end
+    end
+
+    return nil
+end
+
+function ConnectedPeripherals:findAvailableOutput()
+    if config.doRoundRobin then
+        return self:findAvailableOutputRR()
+    else
+        return self:findAvailableOutputSimple()
+    end
+end
+
+function ConnectedPeripherals:pushItems(target)
+    if target.items_peripheral == nil then
+        return
+    end
+    local itemList = pcallR(self.inputBlockItemsPeripheral.list)
+    local toPush = {} -- we need to push separately to make sure we only push after the circuit configuration is set
+    for i, item in pairs(itemList) do
+        out:debug("Pushing %d %s to %s", item.count, item.name, target:itemStrWithCoords())
+        local needsToBePushed = true
+        if config.setCircuitConfig and item.name == config.circuitConfigItem then
+            out:debug("This is a circuit configuration item:")
+            -- we need to parse displayName and extract the number, if it's in format "C:{number}"
+            local itemDetails = pcallR(self.inputBlockItemsPeripheral.getItemDetail, i)
+            local numberStr = string.match(itemDetails.displayName, "C:(%-?%d+)")
+            if numberStr ~= nil then
+                local number = tonumber(numberStr)
+                if number < -1 or number > 32 then
+                    out:error("Circuit configuration number %s is out of range [-1, 32]", number)
+                end
+                out:debug("Setting circuit configuration to %s. Pushing item back", number)
+                pcallR(self.inputBlockItemsPeripheral.pushItems, self.circuitReturnInventoryPerihperalName, i)
+                out:debug("Setting circuit configuration to %d", number)
+                pcallR(target.items_peripheral.setProgrammedCircuit, number)
+                out:debug("Circuit configuration set to %d", number)
+                needsToBePushed = false
+            else
+                out:warning(
+                    "Could not parse circuit configuration number from item %s (%s), treating it as a regular item",
+                    item.name, itemDetails.displayName)
+            end
+        end
+        if needsToBePushed then
+            table.insert(toPush, {i = i, item = item})
+        end
+        out:debug("Item %d %s queud to be pushed to %s", item.count, item.name, target:itemStrWithCoords())
+    end
+
+    -- for _, item in pairs(toPush) do
+    --     pcallR(self.inputBlockItemsPeripheral.pushItems, target.items_peripheral_name, item.i)
+    --     out:debug("Item %d %s pushed to %s", item.item.count, item.item.name, target:itemStrWithCoords())
+    -- end
+    funcs = {}
+    for _, item in pairs(toPush) do
+        table.insert(funcs, function()
+            pcallR(self.inputBlockItemsPeripheral.pushItems, target.items_peripheral_name, item.i)
+            out:debug("Item %d %s pushed to %s", item.item.count, item.item.name, target:itemStrWithCoords())
+        end)
+    end
+    parallel.waitForAll(unpack(funcs))
+end
+
+function ConnectedPeripherals:pushFluids(target)
+    if target.fluids_peripheral == nil then
+        return
+    end
+    local tankList = pcallR(self.inputBlockFluidsPeripheral.tanks)
+    for i, tank in pairs(tankList) do
+        out:debug("Pushing %d %s to %s", tank.amount, tank.name, target:fluidStrWithCoords())
+        pcallR(self.inputBlockFluidsPeripheral.pushFluid, target.fluids_peripheral_name, i)
+        out:debug("Fluid %d %s pushed to %s", tank.amount, tank.name, target:fluidStrWithCoords())
+    end
+end
+
+function ConnectedPeripherals:pushAll(target)
+    parallel.waitForAll(
+        function()
+            self:pushItems(target)
+        end,
+        function()
+            self:pushFluids(target)
+        end
+    )
+end
+
+function ConnectedPeripherals:hasItemsInInput()
+    return not isTableEmpty(pcallR(self.inputBlockItemsPeripheral.list))
+end
+
+function ConnectedPeripherals:hasFluidsInInput()
+    return not isTableEmpty(pcallR(self.inputBlockFluidsPeripheral.tanks))
+end
+
+function ConnectedPeripherals:loop()
+    if config.outputPairing then
+        while true do
+            if self:hasItemsInInput() or self:hasFluidsInInput() then
+                local output = self:findAvailableOutput()
+                if output ~= nil then
+                    self:pushAll(output)
+                else
+                    out:warning("No available outputs found")
+                end
+            else
+                -- out:debug("No items/fluids in input")
+            end
+        end
+    else
+        while true do
+            if self:hasItemsInInput() then
+                local output = self:findAvailableOutput()
+                if output ~= nil then
+                    self:pushItems(output)
+                else
+                    out:warning("No available outputs for items found")
+                end
+            end
+            if self:hasFluidsInInput() then
+                local output = self:findAvailableOutput()
+                if output ~= nil then
+                    self:pushFluids(output)
+                else
+                    out:warning("No available outputs for fluids found")
+                end
+            end
+        end
+    end
+end
+
+-- for debugging purposes
+function ConnectedPeripherals:singleLoop()
+    if config.outputPairing then
+        if self:hasItemsInInput() or self:hasFluidsInInput() then
+            local output = self:findAvailableOutput()
+            if output ~= nil then
+                self:pushAll(output)
+            else
+                out:warning("No available outputs found")
+            end
+        else
+            -- out:debug("No items/fluids in input")
+        end
+    else
+        if self:hasItemsInInput() then
+            local output = self:findAvailableOutput()
+            if output ~= nil then
+                self:pushItems(output)
+            else
+                out:warning("No available outputs for items found")
+            end
+        end
+        if self:hasFluidsInInput() then
+            local output = self:findAvailableOutput()
+            if output ~= nil then
+                self:pushFluids(output)
+            else
+                out:warning("No available outputs for fluids found")
+            end
+        end
+    end
+end
+
+local connectedPeripherals = ConnectedPeripherals:new()
+connectedPeripherals:initialize()
+connectedPeripherals:loop()
+
