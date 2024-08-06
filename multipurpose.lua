@@ -1,3 +1,7 @@
+--- Recursively searches for a file within a given directory path.
+--- @param path string The directory path where the file is to be searched.
+--- @param name string The name of the file to find.
+--- @return string|nil Returns the full path to the file if found, or nil if not found.
 local function findFileRecursive(path, name)
     local files = fs.list(path)
     for _, file in ipairs(files) do
@@ -15,6 +19,9 @@ local function findFileRecursive(path, name)
     return nil
 end
 
+--- Loads the configuration file named 'config.lua' from the current directory or subdirectories.
+--- @return table The loaded Lua table from the configuration file.
+--- @error Raises an error if the configuration file cannot be found or loaded.
 local function loadConfig()
     local configPath = findFileRecursive(".", "config.lua")
     if configPath == nil then
@@ -36,8 +43,7 @@ end
 print("Config loaded")
 
 
--- Console
-
+--- Represents a utility for handling parallel function execution.
 PARALLELCALLER = {
     funcs = nil
 }
@@ -50,19 +56,26 @@ function PARALLELCALLER:new()
     return o
 end
 
+--- Enqueues a function to be executed in parallel.
+--- @param func function The function to enqueue.
 function PARALLELCALLER:enqueue(func)
     table.insert(self.funcs, func)
 end
 
+
+--- Executes all enqueued functions in parallel and clears the queue.
 function PARALLELCALLER:call()
     parallel.waitForAll(unpack(self.funcs))
     self.funcs = {}
 end
 
+--- Returns the number of functions currently enqueued.
+--- @return number The number of enqueued functions.
 function PARALLELCALLER:len()
     return #self.funcs
 end
 
+--- Output utility for logging and error handling, configurable to write to a file.
 OUT = {
     file = nil,
     level = config.logLevel,
@@ -78,6 +91,9 @@ function OUT:new(o)
     return o
 end
 
+--- Internal method to write a log message if it meets the level threshold.
+--- @param level number The log level of the message.
+--- @param msg string The message to log.
 function OUT:_write(level, msg)
     if level >= self.level then
         if config.writeLogToFile then
@@ -88,6 +104,10 @@ function OUT:_write(level, msg)
     end
 end
 
+--- Formats and logs a message with a given level and format string.
+--- @param level number The log level for this message.
+--- @param fmt string The format string.
+--- @param ... vararg Additional arguments for the format string.
 function OUT:print(level, fmt, ...)
     if level < self.level then
         return
@@ -112,6 +132,8 @@ function OUT:print(level, fmt, ...)
     end
 end
 
+--- Convenience methods for logging at specific levels.
+
 function OUT:debug(fmt, ...)
     self:print(config.levels.DEBUG, fmt, ...)
 end
@@ -124,12 +146,18 @@ function OUT:warning(fmt, ...)
     self:print(config.levels.WARNING, fmt, ...)
 end
 
+--- Logs an error message and stops execution by throwing an error.
+--- @param fmt string The format string for the error message.
+--- @vararg any Additional arguments for the format string.
 function OUT:error(fmt, ...)
     self:print(config.levels.ERROR, fmt, ...)
 end
 
 local out = OUT:new()
 
+--- Formats a table into a string representation.
+--- @param tabl table The table to format.
+--- @return string A string representation of the table.
 function FormatTable(tabl)
     if tabl == nil then
         return "nil"
@@ -174,6 +202,11 @@ checkConfig()
 -- GTCEU blocks are often updated (i.e. when an item is inserted/etc), and if we try to call a method while it's updating, the method will fail.
 -- so I'm introducing a retry mechanism
 local RTR_CNT = 60
+--- Calls a Lua function with a specified number of retries on failure.
+--- @param func function The function to call.
+--- @param retries number The number of retries.
+--- @vararg any The arguments to pass to the function.
+--- @return any The result of the function call if successful.
 local function pcallWithRetries(func, retries, ...)
     if func == nil then
         local info = debug.getinfo(2)
@@ -197,11 +230,19 @@ local function pcallWithRetries(func, retries, ...)
     out:error("Max retries (%d) exceeded while calling function %s:%d. Last error: %s", retries, info.source,
         info.currentline, last_error)
 end
--- shortcut
+
+--- A simplified pcall function with a fixed retry count.
+--- @param func function The function to call.
+--- @vararg any The arguments to pass to the function.
+--- @return any The result of the function call if successful.
 local function pcallR(func, ...)
     return pcallWithRetries(func, RTR_CNT, ...)
 end
 
+--- Checks if a table contains a specific element.
+--- @param table table The table to check.
+--- @param element any The element to look for.
+--- @return boolean Returns true if the element is found, false otherwise.
 function table.contains(table, element)
     for _, value in pairs(table) do
         if value == element then
@@ -213,6 +254,9 @@ end
 
 local next = next
 
+--- Checks if a table is empty.
+--- @param tbl table The table to check.
+--- @return boolean Returns true if the table is empty, false otherwise.
 function isTableEmpty(tbl)
     if tbl == nil then return true end
     for _ in pairs(tbl) do
@@ -230,6 +274,8 @@ OUTPUT = {
     fluids_peripheral_coords = nil
 }
 
+--- Creates a new instance of OUTPUT.
+--- @return OUTPUT A new OUTPUT object instance.
 function OUTPUT:new()
     local o = {}
     setmetatable(o, self)
@@ -237,18 +283,24 @@ function OUTPUT:new()
     return o
 end
 
+--- Sets the item peripheral for the output.
+--- @param periph table The peripheral object for items.
 function OUTPUT:setItemsPeripheral(periph)
     self.items_peripheral = periph
     self.items_peripheral_name = peripheral.getName(periph)
     self.items_peripheral_coords = pcallR(periph.getCoords)
 end
 
+-- Sets the fluid peripheral for the output.
+--- @param periph table The peripheral object for fluids.
 function OUTPUT:setFluidsPeripheral(periph)
     self.fluids_peripheral = periph
     self.fluids_peripheral_name = peripheral.getName(periph)
     self.fluids_peripheral_coords = pcallR(periph.getCoords)
 end
 
+--- Checks if the output is empty, i.e., no items or fluids are queued.
+--- @return boolean Returns true if the output is empty, false otherwise.
 function OUTPUT:isEmpty()
     if self.fluids_peripheral ~= nil then
         if not isTableEmpty(pcallR(self.fluids_peripheral.tanks)) then
@@ -266,6 +318,8 @@ function OUTPUT:isEmpty()
     return true
 end
 
+--- Generates a string representation including coordinates for item and fluid peripherals.
+--- @return string A string that represents the current state of both item and fluid peripherals with their coordinates.
 function OUTPUT:strWithCoords()
     if self.items_peripheral ~= nil and self.fluids_peripheral ~= nil then
         return string.format("Items: %s, Fluids: %s", FormatTable(self.items_peripheral_coords),
@@ -277,18 +331,23 @@ function OUTPUT:strWithCoords()
     end
 end
 
+--- Generates a string representation of item peripherals including their coordinates.
+--- @return string A string that represents the current state of the item peripherals with their coordinates.
 function OUTPUT:itemStrWithCoords()
     if self.items_peripheral ~= nil then
         return string.format("Items: %s", FormatTable(self.items_peripheral_coords))
     end
 end
 
+--- Generates a string representation of fluid peripherals including their coordinates.
+--- @return string A string that represents the current state of the fluid peripherals with their coordinates.
 function OUTPUT:fluidStrWithCoords()
     if self.fluids_peripheral ~= nil then
         return string.format("Fluids: %s", FormatTable(self.fluids_peripheral_coords))
     end
 end
 
+--- Encapsulates operations and state management for connected peripherals in the system.
 ConnectedPeripherals = {
     circuitReturnInventoryPerihperal = nil,
     circuitReturnInventoryPerihperalName = nil,
@@ -300,12 +359,16 @@ ConnectedPeripherals = {
     lastOutputIndex = 1 -- round-robin. Skips over busy outputs
 }
 
+--- Creates a new instance of ConnectedPeripherals.
+--- @return ConnectedPeripherals A new ConnectedPeripherals object instance.
 function ConnectedPeripherals:new()
     local o = {}
     setmetatable(o, self)
     self.__index = self
     return o
 end
+
+-- Setters for peripherals
 
 function ConnectedPeripherals:setCircuitReturnInventoryPeripheral(periph)
     self.circuitReturnInventoryPerihperal = periph
@@ -322,6 +385,8 @@ function ConnectedPeripherals:setinputBlockItemsPeripheral(periph)
     self.inputBlockItemsPeripheralName = peripheral.getName(periph)
 end
 
+-- Adds an output to the list of connected peripherals
+--- @param output OUTPUT The output object to add.
 function ConnectedPeripherals:addOutput(output)
     if output.items_peripheral == nil and output.fluids_peripheral == nil then
         out:error("Output must have at least one peripheral")
@@ -333,6 +398,7 @@ function ConnectedPeripherals:addOutput(output)
     table.insert(self.outputs, output)
 end
 
+--- Initializes the ConnectedPeripherals object and loads all peripherals.
 function ConnectedPeripherals:initialize()
     local outputItemPeripherals = {}
     local outputFluidPeripherals = {}
@@ -494,6 +560,8 @@ function ConnectedPeripherals:initialize()
     out:info("Initialization complete")
 end
 
+--- Finds an available output peripheral using a round-robin method.
+--- @return table|nil Returns the available output or nil if none is found.
 function ConnectedPeripherals:findAvailableOutputRR()
     local startIndex = self.lastOutputIndex + 1
     -- Wrap the start index if it exceeds the number of outputs
@@ -523,7 +591,8 @@ function ConnectedPeripherals:findAvailableOutputRR()
     return nil
 end
 
-
+--- Finds an available output peripheral without specific ordering.
+--- @return table|nil Returns the available output or nil if none is found.
 function ConnectedPeripherals:findAvailableOutputSimple()
     for i, output in ipairs(self.outputs) do
         if output:isEmpty() then
@@ -535,6 +604,9 @@ function ConnectedPeripherals:findAvailableOutputSimple()
     return nil
 end
 
+
+--- Selects an available output based on configuration.
+--- @return table|nil Returns the available output or nil if none is found.
 function ConnectedPeripherals:findAvailableOutput()
     if config.doRoundRobin then
         return self:findAvailableOutputRR()
@@ -543,6 +615,8 @@ function ConnectedPeripherals:findAvailableOutput()
     end
 end
 
+--- Pushes items from the input block to a target peripheral.
+--- @param target OUTPUT The target output.
 function ConnectedPeripherals:pushItems(target)
     if target.items_peripheral == nil then
         return
@@ -593,6 +667,8 @@ function ConnectedPeripherals:pushItems(target)
     pc:call()
 end
 
+--- Pushes fluids from the input block to a target peripheral.
+--- @param target OUTPUT The target output.
 function ConnectedPeripherals:pushFluids(target)
     if target.fluids_peripheral == nil then
         return
@@ -610,6 +686,8 @@ function ConnectedPeripherals:pushFluids(target)
     pc:call()
 end
 
+--- Pushes both items and fluids from the input blocks to a target peripheral.
+--- @param target OUTPUT The target output.
 function ConnectedPeripherals:pushAll(target)
     parallel.waitForAll(
             function()
@@ -621,10 +699,14 @@ function ConnectedPeripherals:pushAll(target)
     )
 end
 
+--- Checks if there are items in the input block.
+--- @return boolean Returns true if items are present, false otherwise.
 function ConnectedPeripherals:hasItemsInInput()
     return not isTableEmpty(pcallR(self.inputBlockItemsPeripheral.list))
 end
 
+--- Checks if there are fluids in the input block.
+--- @return boolean Returns true if fluids are present, false otherwise.
 function ConnectedPeripherals:hasFluidsInInput()
     return not isTableEmpty(pcallR(self.inputBlockFluidsPeripheral.tanks))
 end
