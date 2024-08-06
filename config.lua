@@ -5,8 +5,8 @@ local levels = {
     ERROR = 3
 }
 
-local writeLogToFile = true
-local logLevel = levels.DEBUG
+local writeLogToFile = false
+local logLevel = levels.INFO
 
 -- if setCircuitConfig is true, any renamed item (circuitConfigItem) in format "C:{number}" will be treated as circuit configuration trigger (and will be immediately returned to the circuitReturnInventoryBlock)
 local setCircuitConfig = true
