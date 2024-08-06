@@ -39,23 +39,28 @@ print("Config loaded")
 -- Console
 
 PARALLELCALLER = {
-    funcs = {}
+    funcs = nil
 }
 
 function PARALLELCALLER:new()
     local o = {}
     setmetatable(o, self)
     self.__index = self
+    o.funcs = {}
     return o
 end
 
-function PARALLELCALLER:add(func)
+function PARALLELCALLER:enqueue(func)
     table.insert(self.funcs, func)
 end
 
 function PARALLELCALLER:call()
     parallel.waitForAll(unpack(self.funcs))
     self.funcs = {}
+end
+
+function PARALLELCALLER:len()
+    return #self.funcs
 end
 
 OUT = {
@@ -219,8 +224,10 @@ end
 OUTPUT = {
     items_peripheral = nil,
     items_peripheral_name = nil,
+    items_peripheral_coords = nil,
     fluids_peripheral = nil,
     fluids_peripheral_name = nil,
+    fluids_peripheral_coords = nil
 }
 
 function OUTPUT:new()
@@ -233,11 +240,13 @@ end
 function OUTPUT:setItemsPeripheral(periph)
     self.items_peripheral = periph
     self.items_peripheral_name = peripheral.getName(periph)
+    self.items_peripheral_coords = pcallR(periph.getCoords)
 end
 
 function OUTPUT:setFluidsPeripheral(periph)
     self.fluids_peripheral = periph
     self.fluids_peripheral_name = peripheral.getName(periph)
+    self.fluids_peripheral_coords = pcallR(periph.getCoords)
 end
 
 function OUTPUT:isEmpty()
@@ -259,10 +268,10 @@ end
 
 function OUTPUT:strWithCoords()
     if self.items_peripheral ~= nil and self.fluids_peripheral ~= nil then
-        return string.format("Items: %s, Fluids: %s", FormatTable(pcallR(self.items_peripheral.getCoords)),
-            FormatTable(pcallR(self.fluids_peripheral.getCoords)))
+        return string.format("Items: %s, Fluids: %s", FormatTable(self.items_peripheral_coords),
+            FormatTable(self.fluids_peripheral_coords))
     elseif self.items_peripheral ~= nil then
-        return string.format("Items: %s", FormatTable(pcallR(self.items_peripheral.getCoords)))
+        return string.format("Items: %s", FormatTable(self.items_peripheral_coords))
     elseif self.fluids_peripheral ~= nil then
         return string.format("Fluids: %s", FormatTable(pcallR(self.fluids_peripheral.getCoords)))
     end
@@ -270,13 +279,13 @@ end
 
 function OUTPUT:itemStrWithCoords()
     if self.items_peripheral ~= nil then
-        return string.format("Items: %s", FormatTable(pcallR(self.items_peripheral.getCoords)))
+        return string.format("Items: %s", FormatTable(self.items_peripheral_coords))
     end
 end
 
 function OUTPUT:fluidStrWithCoords()
     if self.fluids_peripheral ~= nil then
-        return string.format("Fluids: %s", FormatTable(pcallR(self.fluids_peripheral.getCoords)))
+        return string.format("Fluids: %s", FormatTable(self.fluids_peripheral_coords))
     end
 end
 
@@ -398,6 +407,10 @@ function ConnectedPeripherals:initialize()
         end
     end
 
+    out:info("Loaded peripherals")
+
+
+    out:info("Preparing outputs...")
     if config.outputPairing then
         if #outputItemPeripherals ~= #outputFluidPeripherals then
             out:error("Number of item and fluid peripherals must be equal when config.outputPairing is set to true")
@@ -440,6 +453,7 @@ function ConnectedPeripherals:initialize()
             self:addOutput(output)
         end
     end
+    out:info("Outputs prepared")
 
     if self.circuitReturnInventoryPerihperal == nil then
         if config.setCircuitConfig then
@@ -534,12 +548,15 @@ function ConnectedPeripherals:pushItems(target)
         return
     end
     local itemList = pcallR(self.inputBlockItemsPeripheral.list)
-    local toPush = {} -- we need to push separately to make sure we only push after the circuit configuration is set
+    local pc = PARALLELCALLER:new()
+    local needsToBePushed = nil
     for i, item in pairs(itemList) do
-        out:debug("Pushing %d %s to %s", item.count, item.name, target:itemStrWithCoords())
-        local needsToBePushed = true
+        needsToBePushed = true
+
+        out:debug("Checking pushItems: %d %s", item.count, item.name, target:itemStrWithCoords())
+
         if config.setCircuitConfig and item.name == config.circuitConfigItem then
-            out:debug("This is a circuit configuration item:")
+            out:debug("This is a circuit configuration item")
             -- we need to parse displayName and extract the number, if it's in format "C:{number}"
             local itemDetails = pcallR(self.inputBlockItemsPeripheral.getItemDetail, i)
             local numberStr = string.match(itemDetails.displayName, "C:(%-?%d+)")
@@ -548,9 +565,10 @@ function ConnectedPeripherals:pushItems(target)
                 if number < -1 or number > 32 then
                     out:error("Circuit configuration number %s is out of range [-1, 32]", number)
                 end
-                out:debug("Setting circuit configuration to %s. Pushing item back", number)
-                pcallR(self.inputBlockItemsPeripheral.pushItems, self.circuitReturnInventoryPerihperalName, i)
-                out:debug("Setting circuit configuration to %d", number)
+                out:debug("Enqueuing push")
+                pc:enqueue(function()
+                    pcallR(self.inputBlockItemsPeripheral.pushItems, self.circuitReturnInventoryPerihperalName, i)
+                end)
                 pcallR(target.items_peripheral.setProgrammedCircuit, number)
                 out:debug("Circuit configuration set to %d", number)
                 needsToBePushed = false
@@ -560,24 +578,19 @@ function ConnectedPeripherals:pushItems(target)
                     item.name, itemDetails.displayName)
             end
         end
-        if needsToBePushed then
-            table.insert(toPush, {i = i, item = item})
-        end
-        out:debug("Item %d %s queud to be pushed to %s", item.count, item.name, target:itemStrWithCoords())
-    end
 
-    -- for _, item in pairs(toPush) do
-    --     pcallR(self.inputBlockItemsPeripheral.pushItems, target.items_peripheral_name, item.i)
-    --     out:debug("Item %d %s pushed to %s", item.item.count, item.item.name, target:itemStrWithCoords())
-    -- end
-    funcs = {}
-    for _, item in pairs(toPush) do
-        table.insert(funcs, function()
-            pcallR(self.inputBlockItemsPeripheral.pushItems, target.items_peripheral_name, item.i)
-            out:debug("Item %d %s pushed to %s", item.item.count, item.item.name, target:itemStrWithCoords())
-        end)
+        if needsToBePushed then
+            out:debug("Item %d %s queud to be pushed to %s", item.count, item.name, target:itemStrWithCoords())
+            pc:enqueue(function()
+                out:debug("Pushing %d %s to %s", item.count, item.name, target:itemStrWithCoords())
+                pcallR(self.inputBlockItemsPeripheral.pushItems, target.items_peripheral_name, i)
+                out:debug("Item %d %s pushed to %s", item.count, item.name, target:itemStrWithCoords())
+            end)
+        end
+
     end
-    parallel.waitForAll(unpack(funcs))
+    out:debug("Calling %d queued item pushes", pc:len())
+    pc:call()
 end
 
 function ConnectedPeripherals:pushFluids(target)
@@ -585,21 +598,26 @@ function ConnectedPeripherals:pushFluids(target)
         return
     end
     local tankList = pcallR(self.inputBlockFluidsPeripheral.tanks)
+    local pc = PARALLELCALLER:new()
     for i, tank in pairs(tankList) do
-        out:debug("Pushing %d %s to %s", tank.amount, tank.name, target:fluidStrWithCoords())
-        pcallR(self.inputBlockFluidsPeripheral.pushFluid, target.fluids_peripheral_name, i)
-        out:debug("Fluid %d %s pushed to %s", tank.amount, tank.name, target:fluidStrWithCoords())
+        pc:enqueue(function()
+            out:debug("Pushing %d %s to %s", tank.amount, tank.name, target:fluidStrWithCoords())
+            pcallR(self.inputBlockFluidsPeripheral.pushFluid, target.fluids_peripheral_name, i)
+            out:debug("Fluid %d %s pushed to %s", tank.amount, tank.name, target:fluidStrWithCoords())
+        end)
     end
+    out:debug("Calling %d queued fluid pushes", pc:len())
+    pc:call()
 end
 
 function ConnectedPeripherals:pushAll(target)
     parallel.waitForAll(
-        function()
-            self:pushItems(target)
-        end,
-        function()
-            self:pushFluids(target)
-        end
+            function()
+                self:pushItems(target)
+            end,
+            function()
+                self:pushFluids(target)
+            end
     )
 end
 
@@ -617,7 +635,9 @@ function ConnectedPeripherals:loop()
             if self:hasItemsInInput() or self:hasFluidsInInput() then
                 local output = self:findAvailableOutput()
                 if output ~= nil then
+                    out:debug("========= Next push =========")
                     self:pushAll(output)
+                    out:debug("========= Push complete =========")
                 else
                     out:warning("No available outputs found")
                 end
@@ -630,7 +650,9 @@ function ConnectedPeripherals:loop()
             if self:hasItemsInInput() then
                 local output = self:findAvailableOutput()
                 if output ~= nil then
+                    out:debug("========= Next push =========")
                     self:pushItems(output)
+                    out:debug("========= Push complete =========")
                 else
                     out:warning("No available outputs for items found")
                 end
@@ -638,7 +660,9 @@ function ConnectedPeripherals:loop()
             if self:hasFluidsInInput() then
                 local output = self:findAvailableOutput()
                 if output ~= nil then
+                    out:debug("========= Next push =========")
                     self:pushFluids(output)
+                    out:debug("========= Push complete =========")
                 else
                     out:warning("No available outputs for fluids found")
                 end
@@ -653,9 +677,10 @@ function ConnectedPeripherals:singleLoop()
         if self:hasItemsInInput() or self:hasFluidsInInput() then
             local output = self:findAvailableOutput()
             if output ~= nil then
+                out:debug("========= Next push =========")
                 self:pushAll(output)
             else
-                out:warning("No available outputs found")
+                --out:warning("No available outputs found")
             end
         else
             -- out:debug("No items/fluids in input")
@@ -664,6 +689,7 @@ function ConnectedPeripherals:singleLoop()
         if self:hasItemsInInput() then
             local output = self:findAvailableOutput()
             if output ~= nil then
+                out:debug("========= Next push =========")
                 self:pushItems(output)
             else
                 out:warning("No available outputs for items found")
@@ -672,6 +698,7 @@ function ConnectedPeripherals:singleLoop()
         if self:hasFluidsInInput() then
             local output = self:findAvailableOutput()
             if output ~= nil then
+                out:debug("========= Next push =========")
                 self:pushFluids(output)
             else
                 out:warning("No available outputs for fluids found")
