@@ -82,3 +82,10 @@ These items should be set as secondary outputs in the AE2 system to ensure they 
 
 
 Ensure that these circuit configuration items are encoded into the AE2 patterns correctly and that they are also present in the system to allow seamless automation of your GregTech setups.
+
+Example pattern:
+![image](https://github.com/user-attachments/assets/5458e648-ab39-4585-a8d2-023a7fd2d261)
+
+Example setup:
+![image](https://github.com/user-attachments/assets/a2c950b9-d734-42b1-8158-f9ed5c5ca3ee)
+
