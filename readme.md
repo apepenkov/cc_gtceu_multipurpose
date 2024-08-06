@@ -1,5 +1,17 @@
 # GTCEU multiblock Automation System
 
+## Requirements
+- [Cc tweaked](https://modrinth.com/mod/cc-tweaked)
+- [Kubejs + cc](https://modrinth.com/mod/kubejs+cc-tweaked)
+- [KubeJs](https://modrinth.com/mod/kubejs)
+- ofc, the gtceu
+
+## Installation
+Install the mods above.
+
+Put files from `startup_scripts` in **{modpack/minecraft folder}**`/kubejs/startup_scripts`
+
+
 ## Overview
 This system is designed to automate the process of managing multiple GregTech multiblocks, enabling automatic circuit configuration changes for efficient processing. It leverages Lua scripts to parallelize operations across various peripherals, handling both items and fluids dynamically.
 
@@ -43,8 +55,8 @@ The system defines several log levels to control the amount and type of output g
 ## Dependencies
 This system requires a Lua environment with the `parallel`, `fs`, and `peripheral` APIs available, typically provided in a modded Minecraft setting using the ComputerCraft or similar mods.
 
-## Installation
-To install, place the Lua script in the computer or server running within your modded Minecraft environment. Ensure all peripherals and blocks are correctly configured as per the `config.lua` file.
+## Notes
+It is recommended to encode bulk patterns for AE2, since lua and cc isn't the fastest thing in the world.
 
 ## Support
 For support, refer to the system logs and ensure your modded environment is set up correctly to interface with the Lua script. For further assistance, review the mod documentation or community forums associated with your Minecraft mods.
@@ -63,7 +75,7 @@ To facilitate dynamic control over circuit configurations in GregTech multiblock
 
 
 
-These items should be set as secondary outputs in the AE2 system to ensure they are used specifically for setting the circuit configurations in the GregTech machinery. The system automatically handles the return of these items to the designated `circuitReturnInventoryBlock` after use, allowing for continuous reuse without manual intervention.
+These items should be set as secondary outputs in the AE2 system to ensure they returned to AE2. The system automatically handles the return of these items to the designated `circuitReturnInventoryBlock` after use, allowing for continuous reuse.
 
 
 
