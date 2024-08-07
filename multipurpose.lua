@@ -1,3 +1,40 @@
+local runmodes = {
+    DEFAULT = 0,
+    SINGLE = 1
+}
+local mode = runmodes.DEFAULT
+
+local args = {...}
+local argPairs = {} -- "key=value" pairs
+for _, arg in ipairs(args) do
+    local key, value = string.match(arg, "(%w+)=(%w+)")
+    if key ~= nil then
+        argPairs[key] = value
+    else
+        argPairs[arg] = true
+    end
+end
+
+for key, value in pairs(argPairs) do
+    if key == "mode" then
+        if value == "single" then
+            mode = runmodes.SINGLE
+            print("Running in single mode")
+        else
+            print("Unknown mode " .. value)
+            return
+        end
+    elseif key == "help" then
+        print("Usage: multipurpose [help] [mode=single]")
+        return
+    else
+        print("Unknown argument " .. key .. ". Use `multipurpose help` for help.")
+        return
+    end
+end
+
+
+
 --- Recursively searches for a file within a given directory path.
 --- @param path string The directory path where the file is to be searched.
 --- @param name string The name of the file to find.
@@ -791,5 +828,11 @@ end
 
 local connectedPeripherals = ConnectedPeripherals:new()
 connectedPeripherals:initialize()
-connectedPeripherals:loop()
 
+if mode == runmodes.DEFAULT then
+    connectedPeripherals:loop()
+elseif mode == runmodes.SINGLE then
+    connectedPeripherals:singleLoop()
+else
+    out:error("Unknown mode %s", mode)
+end
