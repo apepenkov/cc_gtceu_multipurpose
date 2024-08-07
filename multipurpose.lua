@@ -1,6 +1,7 @@
 local runmodes = {
     DEFAULT = 0,
-    SINGLE = 1
+    SINGLE = 1,
+    BENCH_INIT = 2,
 }
 local mode = runmodes.DEFAULT
 
@@ -20,12 +21,15 @@ for key, value in pairs(argPairs) do
         if value == "single" then
             mode = runmodes.SINGLE
             print("Running in single mode")
+        elseif value == "benchinit" then
+            mode = runmodes.BENCH_INIT
+            print("Running in benchinit mode")
         else
             print("Unknown mode " .. value)
             return
         end
     elseif key == "help" then
-        print("Usage: multipurpose [help] [mode=single]")
+        print("Usage: multipurpose [help] [mode=single|benchinit]")
         return
     else
         print("Unknown argument " .. key .. ". Use `multipurpose help` for help.")
@@ -824,6 +828,16 @@ function ConnectedPeripherals:singleLoop()
             end
         end
     end
+end
+
+if mode == runmodes.BENCH_INIT then
+    out:info("Bench init mode")
+    local started = os.epoch("utc")
+    local connectedPeripherals = ConnectedPeripherals:new()
+    connectedPeripherals:initialize()
+    local ended = os.epoch("utc")
+    out:info("Initialization took %d ms", ended - started)
+    return
 end
 
 local connectedPeripherals = ConnectedPeripherals:new()
