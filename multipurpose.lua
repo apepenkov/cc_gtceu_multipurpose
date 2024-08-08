@@ -37,6 +37,13 @@ for key, value in pairs(argPairs) do
     end
 end
 
+local states = {
+    INIT = 0,
+    WAITING_FOR_INPUT = 1,
+    TRANSFERRING = 2,
+    WAITING_FOR_OUTPUT = 3
+}
+
 --- Recursively searches for a file within a given directory path.
 --- @param path string The directory path where the file is to be searched.
 --- @param name string The name of the file to find.
@@ -307,9 +314,14 @@ OUTPUT = {
     items_peripheral = nil,
     items_peripheral_name = nil,
     items_peripheral_coords = nil,
+
     fluids_peripheral = nil,
     fluids_peripheral_name = nil,
-    fluids_peripheral_coords = nil
+    fluids_peripheral_coords = nil,
+
+    -- cache checks, done by main loop, to reduce calls from statistics loop, which is less important
+    last_empty = true,
+    last_check = 0
 }
 
 --- Creates a new instance of OUTPUT.
@@ -337,11 +349,17 @@ function OUTPUT:setFluidsPeripheral(periph)
     self.fluids_peripheral_coords = pcallR(periph.getCoords)
 end
 
+function OUTPUT:_setLastEmpty(val)
+    self.last_empty = val
+    self.last_check = os.clock()
+end
+
 --- Checks if the output is empty, i.e., no items or fluids are queued.
 --- @return boolean Returns true if the output is empty, false otherwise.
 function OUTPUT:isEmpty()
     if self.fluids_peripheral ~= nil then
         if not isTableEmpty(pcallR(self.fluids_peripheral.tanks)) then
+            self:_setLastEmpty(false)
             return false
         end
     end
@@ -350,11 +368,20 @@ function OUTPUT:isEmpty()
         for _, item in pairs(items) do
             if item.name ~= "gtceu:programmed_circuit" then
                 -- ignore circuit configuration "item".
+                self:_setLastEmpty(false)
                 return false
             end
         end
     end
+    self:_setLastEmpty(true)
     return true
+end
+
+function OUTPUT:isEmptyCached(delta)
+    if os.clock() - self.last_check < delta then
+        return self.last_empty
+    end
+    return self:isEmpty()
 end
 
 --- Generates a string representation including coordinates for item and fluid peripherals.
@@ -394,7 +421,12 @@ ConnectedPeripherals = {
     inputBlockFluidsPeripheralName = nil,
     inputBlockItemsPeripheral = nil,
     inputBlockItemsPeripheralName = nil,
-    outputs = {},
+    outputs = nil,
+    monitor_periph = nil,
+
+    state = states.INIT,
+    did_pushes = 0,
+
     lastOutputIndex = 1 -- round-robin. Skips over busy outputs
 }
 
@@ -517,6 +549,16 @@ function ConnectedPeripherals:_loadPeripherals()
             end)
         end
     end
+    pc:enqueue(function()
+        local monitor = peripheral.find("monitor")
+        if monitor ~= nil then
+            self.monitor_periph = monitor
+            out:info("Monitor found!")
+            self.monitor_periph.clear()
+            self.monitor_periph.setCursorPos(1, 1)
+            self.monitor_periph.write("Found. Time: " .. os.date("%H:%M:%S"))
+        end
+    end)
     pc:call()
 
     out:info("Loaded peripherals")
@@ -808,20 +850,29 @@ function ConnectedPeripherals:hasFluidsInInput()
     return not isTableEmpty(pcallR(self.inputBlockFluidsPeripheral.tanks))
 end
 
-function ConnectedPeripherals:loop()
+function ConnectedPeripherals:loop(stopAfterOne)
     if config.outputPairing then
         while true do
             if self:hasItemsInInput() or self:hasFluidsInInput() then
                 local output = self:findAvailableOutput()
                 if output ~= nil then
                     out:debug("========= Next push =========")
+                    self.state = states.TRANSFERRING
                     self:pushAll(output)
+                    self.did_pushes = self.did_pushes + 1
+                    self.state = states.WAITING_FOR_INPUT
                     out:debug("========= Push complete =========")
                 else
                     out:warning("No available outputs found")
+                    self.state = states.WAITING_FOR_OUTPUT
                 end
             else
                 -- out:debug("No items/fluids in input")
+                self.state = states.WAITING_FOR_INPUT
+            end
+
+            if stopAfterOne then
+                break
             end
         end
     else
@@ -830,59 +881,115 @@ function ConnectedPeripherals:loop()
                 local output = self:findAvailableOutput()
                 if output ~= nil then
                     out:debug("========= Next push =========")
+                    self.state = states.TRANSFERRING
                     self:pushItems(output)
+                    self.did_pushes = self.did_pushes + 1
+                    self.state = states.WAITING_FOR_INPUT
                     out:debug("========= Push complete =========")
                 else
                     out:warning("No available outputs for items found")
+                    self.state = states.WAITING_FOR_OUTPUT
                 end
             end
             if self:hasFluidsInInput() then
                 local output = self:findAvailableOutput()
                 if output ~= nil then
                     out:debug("========= Next push =========")
+                    self.state = states.TRANSFERRING
                     self:pushFluids(output)
+                    self.did_pushes = self.did_pushes + 1
+                    self.state = states.WAITING_FOR_INPUT
                     out:debug("========= Push complete =========")
                 else
                     out:warning("No available outputs for fluids found")
+                    self.state = states.WAITING_FOR_OUTPUT
                 end
+            end
+
+            if stopAfterOne then
+                break
             end
         end
     end
 end
 
--- for debugging purposes
-function ConnectedPeripherals:singleLoop()
-    if config.outputPairing then
-        if self:hasItemsInInput() or self:hasFluidsInInput() then
-            local output = self:findAvailableOutput()
-            if output ~= nil then
-                out:debug("========= Next push =========")
-                self:pushAll(output)
-            else
-                --out:warning("No available outputs found")
+function ConnectedPeripherals:monitorLoop()
+    if self.monitor_periph == nil then
+        return
+    end
+
+    local lastRefetch = 0
+
+    local availableOutputs = 0
+
+    local availableOutputsItem = 0
+    local availableOutputsFluid = 0
+
+    local totalOutputs = 0
+    local totalOutputsItem = 0
+    local totalOutputsFluid = 0
+
+    while true do
+        if (os.clock() - lastRefetch) > 1 then
+            availableOutputs = 0
+            availableOutputsItem = 0
+            availableOutputsFluid = 0
+            totalOutputsItem = 0
+            totalOutputsFluid = 0
+
+            local pc = PARALLELCALLER:new()
+            for _, output in pairs(self.outputs) do
+                pc:enqueue(function()
+                    if output:isEmptyCached(1) then
+                        availableOutputs = availableOutputs + 1
+                        if output.items_peripheral ~= nil then
+                            availableOutputsItem = availableOutputsItem + 1
+                            totalOutputsItem = totalOutputsItem + 1
+                        end
+                        if output.fluids_peripheral ~= nil then
+                            availableOutputsFluid = availableOutputsFluid + 1
+                            totalOutputsFluid = totalOutputsFluid + 1
+                        end
+                    end
+                end)
             end
+
+            pc:call()
+
+            totalOutputs = #self.outputs
+            lastRefetch = os.clock()
+        end
+
+        self.monitor_periph.clear()
+        self.monitor_periph.setCursorPos(1, 1)
+        self.monitor_periph.write("Time: " .. os.date("%H:%M:%S"))
+        self.monitor_periph.setCursorPos(1, 2)
+        self.monitor_periph.write("State: " .. self.state)
+        self.monitor_periph.setCursorPos(1, 3)
+        self.monitor_periph.write("Last output: " .. self.lastOutputIndex)
+        self.monitor_periph.setCursorPos(1, 4)
+        self.monitor_periph.write("Did pushes: " .. self.did_pushes)
+        self.monitor_periph.setCursorPos(1, 5)
+        if config.outputPairing then
+            self.monitor_periph.write("Outputs: " .. availableOutputs .. "/" .. totalOutputs)
         else
-            -- out:debug("No items/fluids in input")
+            self.monitor_periph.write("Outputs: " .. availableOutputsItem .. "/" .. totalOutputsItem .. " (items), " ..
+                    availableOutputsFluid .. "/" .. totalOutputsFluid .. " (fluids)")
         end
+        os.sleep(1.0 / 20.0)
+    end
+end
+
+function ConnectedPeripherals:run()
+    local stopAfterOne = mode == runmodes.SINGLE
+    if self.monitor_periph ~= nil then
+        parallel.waitForAny(function()
+            self:loop(stopAfterOne)
+        end, function()
+            self:monitorLoop()
+        end)
     else
-        if self:hasItemsInInput() then
-            local output = self:findAvailableOutput()
-            if output ~= nil then
-                out:debug("========= Next push =========")
-                self:pushItems(output)
-            else
-                out:warning("No available outputs for items found")
-            end
-        end
-        if self:hasFluidsInInput() then
-            local output = self:findAvailableOutput()
-            if output ~= nil then
-                out:debug("========= Next push =========")
-                self:pushFluids(output)
-            else
-                out:warning("No available outputs for fluids found")
-            end
-        end
+        self:loop(stopAfterOne)
     end
 end
 
@@ -899,10 +1006,4 @@ end
 local connectedPeripherals = ConnectedPeripherals:new()
 connectedPeripherals:initialize()
 
-if mode == runmodes.DEFAULT then
-    connectedPeripherals:loop()
-elseif mode == runmodes.SINGLE then
-    connectedPeripherals:singleLoop()
-else
-    out:error("Unknown mode %s", mode)
-end
+connectedPeripherals:run()
