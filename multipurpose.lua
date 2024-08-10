@@ -422,7 +422,9 @@ ConnectedPeripherals = {
     inputBlockItemsPeripheral = nil,
     inputBlockItemsPeripheralName = nil,
     outputs = nil,
-    monitor_periph = nil,
+    monitorPeriph = nil,
+    monitorPeriphSizeX = 0,
+    monitorPeriphSizeY = 0,
 
     state = states.INIT,
     did_pushes = 0,
@@ -552,11 +554,17 @@ function ConnectedPeripherals:_loadPeripherals()
     pc:enqueue(function()
         local monitor = peripheral.find("monitor")
         if monitor ~= nil then
-            self.monitor_periph = monitor
+            self.monitorPeriph = monitor
             out:info("Monitor found!")
-            self.monitor_periph.clear()
-            self.monitor_periph.setCursorPos(1, 1)
-            self.monitor_periph.write("Found. Time: " .. os.date("%H:%M:%S"))
+            -- TODO: check for size and compare against minimum size
+            self.monitorPeriph.clear()
+            self.monitorPeriph.setCursorPos(1, 1)
+            self.monitorPeriph.write("Found. Time: " .. os.date("%H:%M:%S"))
+            self.monitorPeriphSizeX, self.monitorPeriphSizeY = self.monitorPeriph.getSize()
+            if self.monitorPeriphSizeX < 40 or self.monitorPeriphSizeY < 7 then
+                self.monitorPeriph.write("Monitor size is too small. Minimum size is 40x7")
+                out:error("Monitor size is too small. Minimum size is 40x7")
+            end
         end
     end)
     pc:call()
@@ -913,8 +921,33 @@ function ConnectedPeripherals:loop(stopAfterOne)
     end
 end
 
+
+--- Draws a progress bar on the monitor at the specified position with the specified width and height.
+--- @param x number The x-coordinate of the progress bar start
+--- @param y number The y-coordinate of the progress bar start
+--- @param barWidth number The width of the progress bar
+--- @param progress number The progress value between 0.0 and 1.0
+function ConnectedPeripherals:drawProgressBar(x, y, barWidth, progress)
+    self.monitorPeriph.setCursorPos(x, y)
+    local maxLen = self.monitorPeriphSizeX - x - (1 * 2)
+    if barWidth > maxLen then
+        barWidth = maxLen
+    end
+
+    local greenPartLen = math.floor((barWidth * progress))
+    local redPartLen = barWidth - greenPartLen
+    self.monitorPeriph.setBackgroundColor(colors.green)
+    self.monitorPeriph.write(string.rep(" ", greenPartLen))
+
+    self.monitorPeriph.setBackgroundColor(colors.red)
+    self.monitorPeriph.write(string.rep(" ", redPartLen))
+
+    self.monitorPeriph.setBackgroundColor(colors.black)
+
+end
+
 function ConnectedPeripherals:monitorLoop()
-    if self.monitor_periph == nil then
+    if self.monitorPeriph == nil then
         return
     end
 
@@ -928,6 +961,10 @@ function ConnectedPeripherals:monitorLoop()
     local totalOutputs = 0
     local totalOutputsItem = 0
     local totalOutputsFluid = 0
+    local toWriteOutputs = nil
+
+    local startedAt = os.clock()
+    local progBarX = 0
 
     while true do
         if (os.clock() - lastRefetch) > 1 then
@@ -960,21 +997,36 @@ function ConnectedPeripherals:monitorLoop()
             lastRefetch = os.clock()
         end
 
-        self.monitor_periph.clear()
-        self.monitor_periph.setCursorPos(1, 1)
-        self.monitor_periph.write("Time: " .. os.date("%H:%M:%S"))
-        self.monitor_periph.setCursorPos(1, 2)
-        self.monitor_periph.write("State: " .. self.state)
-        self.monitor_periph.setCursorPos(1, 3)
-        self.monitor_periph.write("Last output: " .. self.lastOutputIndex)
-        self.monitor_periph.setCursorPos(1, 4)
-        self.monitor_periph.write("Did pushes: " .. self.did_pushes)
-        self.monitor_periph.setCursorPos(1, 5)
-        if config.outputPairing then
-            self.monitor_periph.write("Outputs: " .. availableOutputs .. "/" .. totalOutputs)
+        self.monitorPeriph.clear()
+        self.monitorPeriph.setCursorPos(1, 1)
+        self.monitorPeriph.write("Time: " .. os.date("%H:%M:%S") .. " (running for " .. math.floor(os.clock() - startedAt) .. "s)")
+        self.monitorPeriph.setCursorPos(1, 2)
+        if self.state == states.INIT then
+            self.monitorPeriph.write("State: Initializing")
+        elseif self.state == states.WAITING_FOR_INPUT then
+            self.monitorPeriph.write("State: Waiting for input")
+        elseif self.state == states.WAITING_FOR_OUTPUT then
+            self.monitorPeriph.write("State: Waiting for output")
+        elseif self.state == states.TRANSFERRING then
+            self.monitorPeriph.write("State: Transferring")
         else
-            self.monitor_periph.write("Outputs: " .. availableOutputsItem .. "/" .. totalOutputsItem .. " (items), " ..
-                    availableOutputsFluid .. "/" .. totalOutputsFluid .. " (fluids)")
+            self.monitorPeriph.write("State: " .. self.state)
+        end
+        self.monitorPeriph.setCursorPos(1, 3)
+        self.monitorPeriph.write("Last output: #" .. self.lastOutputIndex)
+        self.monitorPeriph.setCursorPos(1, 4)
+        self.monitorPeriph.write("Did pushes: " .. self.did_pushes)
+        self.monitorPeriph.setCursorPos(1, 5)
+        if config.outputPairing then
+            toWriteOutputs = "Outputs: " .. availableOutputs .. "/" .. totalOutputs
+        else
+            toWriteOutputs = "Outputs: " .. availableOutputsItem .. "/" .. totalOutputsItem .. " (items), " ..
+                    availableOutputsFluid .. "/" .. totalOutputsFluid .. " (fluids)"
+        end
+        self.monitorPeriph.write(toWriteOutputs)
+        progBarX = #toWriteOutputs
+        if progBarX + (10 + 2) < self.monitorPeriphSizeX then
+            self:drawProgressBar(progBarX + 2, 5, self.monitorPeriphSizeX - progBarX - 2, availableOutputs / totalOutputs)
         end
         os.sleep(1.0 / 20.0)
     end
@@ -982,7 +1034,7 @@ end
 
 function ConnectedPeripherals:run()
     local stopAfterOne = mode == runmodes.SINGLE
-    if self.monitor_periph ~= nil then
+    if self.monitorPeriph ~= nil then
         parallel.waitForAny(function()
             self:loop(stopAfterOne)
         end, function()
